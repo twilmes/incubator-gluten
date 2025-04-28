@@ -178,8 +178,8 @@ function apply_compilation_fixes {
   velox_home=$2
 
   git apply ${current_dir}/modify_velox_tzdb.patch
-  git add ${velox_home}/velox/external/tzdb/tzdb.cpp
   git diff --text
+  git add ${velox_home}/velox/external/tzdb/tzdb.cpp
 
   sudo cp ${current_dir}/modify_arrow.patch ${velox_home}/CMake/resolve_dependency_modules/arrow/
   sudo cp ${current_dir}/modify_arrow_dataset_scan_option.patch ${velox_home}/CMake/resolve_dependency_modules/arrow/
