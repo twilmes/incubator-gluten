@@ -78,14 +78,16 @@ val sorted = fileLists.sortBy {
 
 // Main program to run TPC-H testing
 for (t <- sorted) {
-  println(t)
-  val fileContents = Source.fromFile(t).getLines.filter(!_.startsWith("--")).mkString(" ")
-  println(fileContents)
-  try {
-    time{spark.sql(fileContents).show}
-    //spark.sql(fileContents).explain
-    Thread.sleep(2000)
-  } catch {
-    case e: Exception => None
+  val fileContents = {
+    val src = Source.fromFile(t)
+    try {
+      src.getLines().filter(!_.startsWith("--")).mkString(" ")
+    } finally {
+      src.close()
+    }
   }
+  println(t)
+  println(fileContents)
+  time{spark.sql(fileContents).collectAsList()}
+  Thread.sleep(2000)
 }

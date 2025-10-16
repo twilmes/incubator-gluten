@@ -21,6 +21,13 @@
 #include "velox/connectors/hive/HiveConfig.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/exec/PlanNodeStats.h"
+#ifdef GLUTEN_ENABLE_GPU
+#include <cudf/io/types.hpp>
+#include <mutex>
+#include "velox/experimental/cudf/CudfConfig.h"
+#include "velox/experimental/cudf/connectors/hive/CudfHiveConnectorSplit.h"
+#include "velox/experimental/cudf/exec/ToCudf.h"
+#endif
 
 using namespace facebook;
 
@@ -45,6 +52,8 @@ const std::string kStorageReadBytes = "storageReadBytes";
 const std::string kLocalReadBytes = "localReadBytes";
 const std::string kRamReadBytes = "ramReadBytes";
 const std::string kPreloadSplits = "readyPreloadedSplits";
+const std::string kDataSourceAddSplitWallNanos = "dataSourceAddSplitWallNanos";
+const std::string kDataSourceReadWallNanos = "dataSourceReadWallNanos";
 const std::string kNumWrittenFiles = "numWrittenFiles";
 const std::string kWriteIOTime = "writeIOWallNanos";
 
@@ -67,6 +76,9 @@ WholeStageResultIterator::WholeStageResultIterator(
           std::make_shared<facebook::velox::config::ConfigBase>(std::unordered_map<std::string, std::string>(confMap))),
       taskInfo_(taskInfo),
       veloxPlan_(planNode),
+#ifdef GLUTEN_ENABLE_GPU
+      lock_(mutex_, std::defer_lock),
+#endif
       scanNodeIds_(scanNodeIds),
       scanInfos_(scanInfos),
       streamIds_(streamIds) {
@@ -75,31 +87,42 @@ WholeStageResultIterator::WholeStageResultIterator(
   if (spillThreadNum > 0) {
     spillExecutor_ = std::make_shared<folly::CPUThreadPoolExecutor>(spillThreadNum);
   }
-
   getOrderedNodeIds(veloxPlan_, orderedNodeIds_);
+
+#ifdef GLUTEN_ENABLE_GPU
+  enableCudf_ = veloxCfg_->get<bool>(kCudfEnabled, kCudfEnabledDefault);
+  if (enableCudf_) {
+    lock_.lock();
+  }
+#endif
+
+  auto fileSystem = velox::filesystems::getFileSystem(spillDir, nullptr);
+  GLUTEN_CHECK(fileSystem != nullptr, "File System for spilling is null!");
+  fileSystem->mkdir(spillDir);
+  velox::common::SpillDiskOptions spillOpts{
+      .spillDirPath = spillDir, .spillDirCreated = true, .spillDirCreateCb = nullptr};
 
   // Create task instance.
   std::unordered_set<velox::core::PlanNodeId> emptySet;
   velox::core::PlanFragment planFragment{planNode, velox::core::ExecutionStrategy::kUngrouped, 1, emptySet};
   std::shared_ptr<velox::core::QueryCtx> queryCtx = createNewVeloxQueryCtx();
-  static std::atomic<uint32_t> vtId{0}; // Velox task ID to distinguish from Spark task ID.
   task_ = velox::exec::Task::create(
       fmt::format(
           "Gluten_Stage_{}_TID_{}_VTID_{}",
           std::to_string(taskInfo_.stageId),
           std::to_string(taskInfo_.taskId),
-          std::to_string(vtId++)),
+          std::to_string(taskInfo.vId)),
       std::move(planFragment),
       0,
       std::move(queryCtx),
-      velox::exec::Task::ExecutionMode::kSerial);
+      velox::exec::Task::ExecutionMode::kSerial,
+      /*consumer=*/velox::exec::Consumer{},
+      /*memoryArbitrationPriority=*/0,
+      /*spillDiskOpts=*/spillOpts,
+      /*onError=*/nullptr);
   if (!task_->supportSerialExecutionMode()) {
     throw std::runtime_error("Task doesn't support single threaded execution: " + planNode->toString());
   }
-  auto fileSystem = velox::filesystems::getFileSystem(spillDir, nullptr);
-  GLUTEN_CHECK(fileSystem != nullptr, "File System for spilling is null!");
-  fileSystem->mkdir(spillDir);
-  task_->setSpillDirectory(spillDir);
 
   // Generate splits for all scan nodes.
   splits_.reserve(scanInfos.size());
@@ -117,14 +140,19 @@ WholeStageResultIterator::WholeStageResultIterator(
     const auto& format = scanInfo->format;
     const auto& partitionColumns = scanInfo->partitionColumns;
     const auto& metadataColumns = scanInfo->metadataColumns;
+    // Under the pre-condition that all the split infos has same partition column and format.
+    const auto canUseCudfConnector = scanInfo->canUseCudfConnector();
 
     std::vector<std::shared_ptr<velox::connector::ConnectorSplit>> connectorSplits;
     connectorSplits.reserve(paths.size());
     for (int idx = 0; idx < paths.size(); idx++) {
-      auto partitionColumn = partitionColumns[idx];
       auto metadataColumn = metadataColumns[idx];
       std::unordered_map<std::string, std::optional<std::string>> partitionKeys;
-      constructPartitionColumns(partitionKeys, partitionColumn);
+      if (!partitionColumns.empty()) {
+        auto partitionColumn = partitionColumns[idx];
+        constructPartitionColumns(partitionKeys, partitionColumn);
+      }
+
       std::shared_ptr<velox::connector::ConnectorSplit> split;
       if (auto icebergSplitInfo = std::dynamic_pointer_cast<IcebergSplitInfo>(scanInfo)) {
         // Set Iceberg split.
@@ -145,8 +173,16 @@ WholeStageResultIterator::WholeStageResultIterator(
             std::unordered_map<std::string, std::string>(),
             properties[idx]);
       } else {
+        auto connectorId = kHiveConnectorId;
+#ifdef GLUTEN_ENABLE_GPU
+        if (canUseCudfConnector) {
+          connectorId = kCudfHiveConnectorId;
+          VELOX_CHECK_EQ(starts[idx], 0, "Not support split file");
+          VELOX_CHECK_EQ(lengths[idx], scanInfo->properties[idx]->fileSize, "Not support split file");
+        }
+#endif
         split = std::make_shared<velox::connector::hive::HiveConnectorSplit>(
-            kHiveConnectorId,
+            connectorId,
             paths[idx],
             format,
             starts[idx],
@@ -155,7 +191,6 @@ WholeStageResultIterator::WholeStageResultIterator(
             std::nullopt /*tableBucketName*/,
             std::unordered_map<std::string, std::string>(),
             nullptr,
-            std::unordered_map<std::string, std::string>(),
             std::unordered_map<std::string, std::string>(),
             0,
             true,
@@ -176,10 +211,13 @@ WholeStageResultIterator::WholeStageResultIterator(
   }
 }
 
+#ifdef GLUTEN_ENABLE_GPU
+std::mutex WholeStageResultIterator::mutex_;
+#endif
+
 std::shared_ptr<velox::core::QueryCtx> WholeStageResultIterator::createNewVeloxQueryCtx() {
   std::unordered_map<std::string, std::shared_ptr<velox::config::ConfigBase>> connectorConfigs;
   connectorConfigs[kHiveConnectorId] = createConnectorConfig();
-  static std::atomic<uint32_t> vqId{0}; // Velox query ID, same with taskId.
   std::shared_ptr<velox::core::QueryCtx> ctx = velox::core::QueryCtx::create(
       nullptr,
       facebook::velox::core::QueryConfig{getQueryContextConf()},
@@ -191,11 +229,22 @@ std::shared_ptr<velox::core::QueryCtx> WholeStageResultIterator::createNewVeloxQ
           "Gluten_Stage_{}_TID_{}_VTID_{}",
           std::to_string(taskInfo_.stageId),
           std::to_string(taskInfo_.taskId),
-          std::to_string(vqId++)));
+          std::to_string(taskInfo_.vId)));
   return ctx;
 }
 
 std::shared_ptr<ColumnarBatch> WholeStageResultIterator::next() {
+  auto result = nextInternal();
+#ifdef GLUTEN_ENABLE_GPU
+  if (result == nullptr && enableCudf_) {
+    lock_.unlock();
+  }
+#endif
+
+  return result;
+}
+
+std::shared_ptr<ColumnarBatch> WholeStageResultIterator::nextInternal() {
   tryAddSplitsToTask();
   if (task_->isFinished()) {
     return nullptr;
@@ -223,8 +272,12 @@ std::shared_ptr<ColumnarBatch> WholeStageResultIterator::next() {
   if (numRows == 0) {
     return nullptr;
   }
-  for (auto& child : vector->children()) {
-    child->loadedVector();
+
+  {
+    ScopedTimer timer(&loadLazyVectorTime_);
+    for (auto& child : vector->children()) {
+      child->loadedVector();
+    }
   }
 
   return std::make_shared<VeloxColumnarBatch>(vector);
@@ -345,13 +398,16 @@ void WholeStageResultIterator::collectMetrics() {
     return;
   }
 
+  // Save and print the plan with stats if debug mode is enabled or showTaskMetricsWhenFinished is true.
   if (veloxCfg_->get<bool>(kDebugModeEnabled, false) ||
       veloxCfg_->get<bool>(kShowTaskMetricsWhenFinished, kShowTaskMetricsWhenFinishedDefault)) {
     auto planWithStats = velox::exec::printPlanWithStats(*veloxPlan_.get(), taskStats, true);
     std::ostringstream oss;
-    oss << "Native Plan with stats for: " << taskInfo_;
+    oss << "Native Plan with stats for: " << taskInfo_ << "\n";
+    oss << "TaskStats: totalTime: " << taskStats.executionEndTimeMs - taskStats.executionStartTimeMs
+        << "; startTime: " << taskStats.executionStartTimeMs << "; endTime: " << taskStats.executionEndTimeMs;
     oss << "\n" << planWithStats << std::endl;
-    LOG(INFO) << oss.str();
+    LOG(WARNING) << oss.str();
   }
 
   auto planStats = velox::exec::toPlanStats(taskStats);
@@ -377,6 +433,8 @@ void WholeStageResultIterator::collectMetrics() {
 
   int metricIndex = 0;
   for (int idx = 0; idx < orderedNodeIds_.size(); idx++) {
+    metrics_->get(Metrics::kLoadLazyVectorTime)[metricIndex] = 0;
+
     const auto& nodeId = orderedNodeIds_[idx];
     if (planStats.find(nodeId) == planStats.end()) {
       // Special handing for Filter over Project case. Filter metrics are
@@ -438,6 +496,10 @@ void WholeStageResultIterator::collectMetrics() {
       metrics_->get(Metrics::kRamReadBytes)[metricIndex] = runtimeMetric("sum", second->customStats, kRamReadBytes);
       metrics_->get(Metrics::kPreloadSplits)[metricIndex] =
           runtimeMetric("sum", entry.second->customStats, kPreloadSplits);
+      metrics_->get(Metrics::kDataSourceAddSplitWallNanos)[metricIndex] =
+          runtimeMetric("sum", second->customStats, kDataSourceAddSplitWallNanos);
+      metrics_->get(Metrics::kDataSourceReadWallNanos)[metricIndex] =
+          runtimeMetric("sum", second->customStats, kDataSourceReadWallNanos);
       metrics_->get(Metrics::kNumWrittenFiles)[metricIndex] =
           runtimeMetric("sum", entry.second->customStats, kNumWrittenFiles);
       metrics_->get(Metrics::kPhysicalWrittenBytes)[metricIndex] = second->physicalWrittenBytes;
@@ -445,6 +507,19 @@ void WholeStageResultIterator::collectMetrics() {
 
       metricIndex += 1;
     }
+  }
+
+  // Put the loadLazyVector time into the metrics of the last operator.
+  metrics_->get(Metrics::kLoadLazyVectorTime)[orderedNodeIds_.size() - 1] = loadLazyVectorTime_;
+
+  // Populate the metrics with task stats for long running tasks.
+  if (const int64_t collectTaskStatsThreshold =
+          veloxCfg_->get<int64_t>(kTaskMetricsToEventLogThreshold, kTaskMetricsToEventLogThresholdDefault);
+      collectTaskStatsThreshold >= 0 &&
+      static_cast<int64_t>(taskStats.terminationTimeMs - taskStats.executionStartTimeMs) >
+          collectTaskStatsThreshold * 1'000) {
+    auto jsonStats = velox::exec::toPlanStatsJson(taskStats);
+    metrics_->stats = folly::toJson(jsonStats);
   }
 }
 
@@ -476,7 +551,10 @@ std::unordered_map<std::string, std::string> WholeStageResultIterator::getQueryC
       std::to_string(veloxCfg_->get<uint32_t>(kSparkBatchSize, 4096));
   configs[velox::core::QueryConfig::kMaxOutputBatchRows] =
       std::to_string(veloxCfg_->get<uint32_t>(kSparkBatchSize, 4096));
+  configs[velox::core::QueryConfig::kPreferredOutputBatchBytes] =
+      std::to_string(veloxCfg_->get<uint64_t>(kVeloxPreferredBatchBytes, 10L << 20));
   try {
+    configs[velox::core::QueryConfig::kSparkAnsiEnabled] = veloxCfg_->get<std::string>(kAnsiEnabled, "false");
     configs[velox::core::QueryConfig::kSessionTimezone] = veloxCfg_->get<std::string>(kSessionTimezone, "");
     // Adjust timestamp according to the above configured session timezone.
     configs[velox::core::QueryConfig::kAdjustTimestampToTimezone] = "true";
@@ -528,7 +606,7 @@ std::unordered_map<std::string, std::string> WholeStageResultIterator::getQueryC
     configs[velox::core::QueryConfig::kSpillReadBufferSize] =
         std::to_string(veloxCfg_->get<int32_t>(kSpillReadBufferSize, 1L * 1024 * 1024));
     configs[velox::core::QueryConfig::kSpillStartPartitionBit] =
-        std::to_string(veloxCfg_->get<uint8_t>(kSpillStartPartitionBit, 29));
+        std::to_string(veloxCfg_->get<uint8_t>(kSpillStartPartitionBit, 48));
     configs[velox::core::QueryConfig::kSpillNumPartitionBits] =
         std::to_string(veloxCfg_->get<uint8_t>(kSpillPartitionBits, 3));
     configs[velox::core::QueryConfig::kSpillableReservationGrowthPct] =
@@ -552,6 +630,12 @@ std::unordered_map<std::string, std::string> WholeStageResultIterator::getQueryC
     configs[velox::core::QueryConfig::kMaxSplitPreloadPerDriver] =
         std::to_string(veloxCfg_->get<int32_t>(kVeloxSplitPreloadPerDriver, 2));
 
+    // hashtable build optimizations
+    configs[velox::core::QueryConfig::kAbandonBuildNoDupHashMinRows] =
+        std::to_string(veloxCfg_->get<int32_t>(kAbandonBuildNoDupHashMinRows, 100000));
+    configs[velox::core::QueryConfig::kAbandonBuildNoDupHashMinPct] =
+        std::to_string(veloxCfg_->get<int32_t>(kAbandonBuildNoDupHashMinPct, 0));
+
     // Disable driver cpu time slicing.
     configs[velox::core::QueryConfig::kDriverCpuTimeSliceLimitMs] = "0";
 
@@ -574,15 +658,24 @@ std::unordered_map<std::string, std::string> WholeStageResultIterator::getQueryC
     configs[velox::core::QueryConfig::kSparkLegacyStatisticalAggregate] =
         std::to_string(veloxCfg_->get<bool>(kSparkLegacyStatisticalAggregate, false));
 
+    configs[velox::core::QueryConfig::kSparkJsonIgnoreNullFields] =
+        std::to_string(veloxCfg_->get<bool>(kSparkJsonIgnoreNullFields, true));
+
+    configs[velox::core::QueryConfig::kExprMaxCompiledRegexes] =
+        std::to_string(veloxCfg_->get<int32_t>(kExprMaxCompiledRegexes, 100));
+
+#ifdef GLUTEN_ENABLE_GPU
+    configs[velox::cudf_velox::CudfConfig::kCudfEnabled] = std::to_string(veloxCfg_->get<bool>(kCudfEnabled, false));
+#endif
+
     const auto setIfExists = [&](const std::string& glutenKey, const std::string& veloxKey) {
       const auto valueOptional = veloxCfg_->get<std::string>(glutenKey);
-      if (valueOptional.hasValue()) {
+      if (valueOptional.has_value()) {
         configs[veloxKey] = valueOptional.value();
       }
     };
     setIfExists(kQueryTraceEnabled, velox::core::QueryConfig::kQueryTraceEnabled);
     setIfExists(kQueryTraceDir, velox::core::QueryConfig::kQueryTraceDir);
-    setIfExists(kQueryTraceNodeIds, velox::core::QueryConfig::kQueryTraceNodeIds);
     setIfExists(kQueryTraceMaxBytes, velox::core::QueryConfig::kQueryTraceMaxBytes);
     setIfExists(kQueryTraceTaskRegExp, velox::core::QueryConfig::kQueryTraceTaskRegExp);
     setIfExists(kOpTraceDirectoryCreateConfig, velox::core::QueryConfig::kOpTraceDirectoryCreateConfig);
@@ -606,6 +699,10 @@ std::shared_ptr<velox::config::ConfigBase> WholeStageResultIterator::createConne
       std::to_string(veloxCfg_->get<int32_t>(kMaxPartitions, 10000));
   configs[velox::connector::hive::HiveConfig::kIgnoreMissingFilesSession] =
       std::to_string(veloxCfg_->get<bool>(kIgnoreMissingFiles, false));
+  configs[velox::connector::hive::HiveConfig::kParquetUseColumnNamesSession] =
+      std::to_string(veloxCfg_->get<bool>(kParquetUseColumnNames, true));
+  configs[velox::connector::hive::HiveConfig::kOrcUseColumnNamesSession] =
+        std::to_string(veloxCfg_->get<bool>(kOrcUseColumnNames, true));
   return std::make_shared<velox::config::ConfigBase>(std::move(configs));
 }
 

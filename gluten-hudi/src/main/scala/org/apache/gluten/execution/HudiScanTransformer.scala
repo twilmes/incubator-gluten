@@ -16,7 +16,6 @@
  */
 package org.apache.gluten.execution
 
-import org.apache.gluten.extension.ValidationResult
 import org.apache.gluten.substrait.rel.LocalFilesNode.ReadFileFormat
 
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -52,9 +51,6 @@ case class HudiScanTransformer(
   override lazy val fileFormat: ReadFileFormat = ReadFileFormat.ParquetReadFormat
 
   override protected def doValidateInternal(): ValidationResult = {
-    if (requiredSchema.fields.exists(_.name.startsWith("_hoodie"))) {
-      return ValidationResult.failed(s"Hudi meta field not supported.")
-    }
     super.doValidateInternal()
   }
 
@@ -89,5 +85,19 @@ object HudiScanTransformer {
       scanExec.tableIdentifier,
       scanExec.disableBucketedScan
     )
+  }
+
+  /**
+   * Check if the Hudi file format is supported for native engine execution.
+   *
+   * If not, Gluten will fall back to Spark execution.
+   */
+  def isSupportedHudiFileFormat(fileFormatName: String): Boolean = {
+    // Support formats like:
+    // "org.apache.spark.sql.execution.datasources.parquet.Spark35LegacyHoodieParquetFileFormat"
+    // "org.apache.spark.sql.execution.datasources.parquet.HoodieParquetFileFormat"
+    // But exclude "NewHoodieParquetFileFormat"
+    !fileFormatName.endsWith("NewHoodieParquetFileFormat") &&
+    fileFormatName.endsWith("HoodieParquetFileFormat")
   }
 }

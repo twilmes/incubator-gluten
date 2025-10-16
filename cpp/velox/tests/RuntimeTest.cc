@@ -19,14 +19,18 @@
 
 #include <gtest/gtest.h>
 #include "compute/VeloxBackend.h"
+#include "memory.pb.h"
 
 namespace gluten {
 
 class DummyMemoryManager final : public MemoryManager {
  public:
-  DummyMemoryManager(const std::string& kind) : MemoryManager(kind){};
+  DummyMemoryManager(const std::string& kind) : MemoryManager(kind) {};
 
-  arrow::MemoryPool* getArrowMemoryPool() override {
+  arrow::MemoryPool* defaultArrowMemoryPool() override {
+    throw GlutenException("Not yet implemented");
+  }
+  std::shared_ptr<arrow::MemoryPool> getOrCreateArrowMemoryPool(const std::string& name) override {
     throw GlutenException("Not yet implemented");
   }
   const MemoryUsageStats collectMemoryUsageStats() const override {
@@ -50,9 +54,9 @@ class DummyRuntime final : public Runtime {
       const std::unordered_map<std::string, std::string>& conf)
       : Runtime(kind, mm, conf) {}
 
-  void parsePlan(const uint8_t* data, int32_t size, std::optional<std::string> dumpFile) override {}
+  void parsePlan(const uint8_t* data, int32_t size) override {}
 
-  void parseSplitInfo(const uint8_t* data, int32_t size, std::optional<std::string> dumpFile) override {}
+  void parseSplitInfo(const uint8_t* data, int32_t size, int32_t idx) override {}
 
   std::shared_ptr<ResultIterator> createResultIterator(
       const std::string& spillDir,
@@ -75,9 +79,9 @@ class DummyRuntime final : public Runtime {
     throw GlutenException("Not yet implemented");
   }
   std::shared_ptr<ShuffleWriter> createShuffleWriter(
-      int numPartitions,
-      std::unique_ptr<PartitionWriter> partitionWriter,
-      ShuffleWriterOptions) override {
+      int32_t numPartitions,
+      const std::shared_ptr<PartitionWriter>& partitionWriter,
+      const std::shared_ptr<ShuffleWriterOptions>&) override {
     throw GlutenException("Not yet implemented");
   }
   Metrics* getMetrics(ColumnarBatchIterator* rawIter, int64_t exportNanos) override {
@@ -96,14 +100,6 @@ class DummyRuntime final : public Runtime {
     throw GlutenException("Not yet implemented");
   }
   std::string planString(bool details, const std::unordered_map<std::string, std::string>& sessionConf) override {
-    throw GlutenException("Not yet implemented");
-  }
-
-  void dumpConf(const std::string& path) override {
-    throw GlutenException("Not yet implemented");
-  }
-
-  std::shared_ptr<ArrowWriter> createArrowWriter(const std::string& path) override {
     throw GlutenException("Not yet implemented");
   }
 

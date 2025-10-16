@@ -32,8 +32,9 @@ class VeloxPlanConverter {
   explicit VeloxPlanConverter(
       const std::vector<std::shared_ptr<ResultIterator>>& inputIters,
       facebook::velox::memory::MemoryPool* veloxPool,
-      const std::unordered_map<std::string, std::string>& confMap,
+      const facebook::velox::config::ConfigBase* veloxCfg,
       const std::optional<std::string> writeFilesTempPath = std::nullopt,
+      const std::optional<std::string> writeFileName = std::nullopt,
       bool validationMode = false);
 
   std::shared_ptr<const facebook::velox::core::PlanNode> toVeloxPlan(
@@ -45,12 +46,9 @@ class VeloxPlanConverter {
   }
 
  private:
-  std::string nextPlanNodeId();
-
-  int planNodeId_ = 0;
-
   bool validationMode_;
 
+  const facebook::velox::config::ConfigBase* veloxCfg_;
   SubstraitToVeloxPlanConverter substraitVeloxPlanConverter_;
 };
 

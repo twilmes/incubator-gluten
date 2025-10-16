@@ -36,7 +36,7 @@ class ClickHouseIcebergSuite extends GlutenClickHouseWholeStageTransformerSuite 
         "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
       .set("spark.sql.catalog.spark_catalog", "org.apache.iceberg.spark.SparkCatalog")
       .set("spark.sql.catalog.spark_catalog.type", "hadoop")
-      .set("spark.sql.catalog.spark_catalog.warehouse", s"file://$basePath/tpch-data-iceberg")
+      .set("spark.sql.catalog.spark_catalog.warehouse", s"file://$dataHome/tpch-data-iceberg")
   }
 
   test("iceberg transformer exists") {
@@ -292,7 +292,7 @@ class ClickHouseIcebergSuite extends GlutenClickHouseWholeStageTransformerSuite 
             getExecutedPlan(df).map {
               case plan: IcebergScanTransformer =>
                 assert(plan.getKeyGroupPartitioning.isDefined)
-                assert(plan.getSplitInfosWithIndex.length == 3)
+                assert(plan.getSplitInfos.length == 3)
               case _ => // do nothing
             }
           }
@@ -372,7 +372,7 @@ class ClickHouseIcebergSuite extends GlutenClickHouseWholeStageTransformerSuite 
             getExecutedPlan(df).map {
               case plan: IcebergScanTransformer =>
                 assert(plan.getKeyGroupPartitioning.isDefined)
-                assert(plan.getSplitInfosWithIndex.length == 3)
+                assert(plan.getSplitInfos.length == 3)
               case _ => // do nothing
             }
           }

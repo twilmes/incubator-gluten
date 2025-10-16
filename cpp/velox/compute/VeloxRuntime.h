@@ -19,12 +19,19 @@
 
 #include "WholeStageResultIterator.h"
 #include "compute/Runtime.h"
+#ifdef GLUTEN_ENABLE_ENHANCED_FEATURES
+#include "iceberg/IcebergWriter.h"
+#endif
 #include "memory/VeloxMemoryManager.h"
 #include "operators/serializer/VeloxColumnarBatchSerializer.h"
 #include "operators/serializer/VeloxColumnarToRowConverter.h"
 #include "operators/writer/VeloxParquetDataSource.h"
 #include "shuffle/ShuffleReader.h"
 #include "shuffle/ShuffleWriter.h"
+
+#ifdef GLUTEN_ENABLE_ENHANCED_FEATURES
+#include "IcebergNestedField.pb.h"
+#endif
 
 namespace gluten {
 
@@ -35,9 +42,15 @@ class VeloxRuntime final : public Runtime {
       VeloxMemoryManager* vmm,
       const std::unordered_map<std::string, std::string>& confMap);
 
-  void parsePlan(const uint8_t* data, int32_t size, std::optional<std::string> dumpFile) override;
+  void setSparkTaskInfo(SparkTaskInfo taskInfo) override {
+    static std::atomic<uint32_t> vtId{0};
+    taskInfo.vId = vtId++;
+    taskInfo_ = taskInfo;
+  }
 
-  void parseSplitInfo(const uint8_t* data, int32_t size, std::optional<std::string> dumpFile) override;
+  void parsePlan(const uint8_t* data, int32_t size) override;
+
+  void parseSplitInfo(const uint8_t* data, int32_t size, int32_t splitIndex) override;
 
   VeloxMemoryManager* memoryManager() override;
 
@@ -56,10 +69,21 @@ class VeloxRuntime final : public Runtime {
 
   std::shared_ptr<RowToColumnarConverter> createRow2ColumnarConverter(struct ArrowSchema* cSchema) override;
 
+#ifdef GLUTEN_ENABLE_ENHANCED_FEATURES
+  std::shared_ptr<IcebergWriter> createIcebergWriter(
+      RowTypePtr rowType,
+      int32_t format,
+      const std::string& outputDirectory,
+      facebook::velox::common::CompressionKind compressionKind,
+      std::shared_ptr<const facebook::velox::connector::hive::iceberg::IcebergPartitionSpec> spec,
+      const gluten::IcebergNestedField& protoField,
+      const std::unordered_map<std::string, std::string>& sparkConfs);
+#endif
+
   std::shared_ptr<ShuffleWriter> createShuffleWriter(
       int numPartitions,
-      std::unique_ptr<PartitionWriter> partitionWriter,
-      ShuffleWriterOptions options) override;
+      const std::shared_ptr<PartitionWriter>& partitionWriter,
+      const std::shared_ptr<ShuffleWriterOptions>& options) override;
 
   Metrics* getMetrics(ColumnarBatchIterator* rawIter, int64_t exportNanos) override {
     auto iter = static_cast<WholeStageResultIterator*>(rawIter);
@@ -74,9 +98,7 @@ class VeloxRuntime final : public Runtime {
 
   std::string planString(bool details, const std::unordered_map<std::string, std::string>& sessionConf) override;
 
-  void dumpConf(const std::string& path) override;
-
-  std::shared_ptr<ArrowWriter> createArrowWriter(const std::string& path) override;
+  void enableDumping() override;
 
   std::shared_ptr<VeloxDataSource> createDataSource(const std::string& filePath, std::shared_ptr<arrow::Schema> schema);
 

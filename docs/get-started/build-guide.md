@@ -16,8 +16,6 @@ Please set them via `--`, e.g. `--build_type=Release`.
 | build_benchmarks       | Build gluten cpp benchmarks.                                                                       | OFF     |
 | enable_jemalloc_stats  | Print jemalloc stats for debugging.                                                                | OFF     |
 | enable_qat             | Enable QAT for shuffle data de/compression.                                                        | OFF     |
-| enable_iaa             | Enable IAA for shuffle data de/compression.                                                        | OFF     |
-| enable_hbm             | Enable HBM allocator.                                                                              | OFF     |
 | enable_s3              | Build with S3 support.                                                                             | OFF     |
 | enable_gcs             | Build with GCS support.                                                                            | OFF     |
 | enable_hdfs            | Build with HDFS support.                                                                           | OFF     |
@@ -32,7 +30,7 @@ Please set them via `--`, e.g. `--build_type=Release`.
 | build_arrow            | Build arrow java/cpp and install the libs in local. Can turn it OFF after first build.             | ON      |
 | spark_version          | Build for specified version of Spark(3.2, 3.3, 3.4, 3.5, ALL). `ALL` means build for all versions. | ALL     |
 
-### Velox build parameters for build_velox.sh
+### Velox build parameters for build-velox.sh
 Please set them via `--`, e.g., `--velox_home=/YOUR/PATH`.
 
 | Parameters       | Description                                                   | Default                                  |
@@ -74,4 +72,4 @@ It's name pattern is `gluten-<backend_type>-bundle-spark<spark.bundle.version>_<
 | 3.2.2         | 3.2                  | 2.12                 |
 | 3.3.1         | 3.3                  | 2.12                 |
 | 3.4.4         | 3.4                  | 2.12                 |
-| 3.5.2         | 3.5                  | 2.12                 |
+| 3.5.5         | 3.5                  | 2.12                 |

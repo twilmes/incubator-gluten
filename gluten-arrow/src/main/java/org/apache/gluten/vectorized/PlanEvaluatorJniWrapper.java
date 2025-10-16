@@ -41,7 +41,7 @@ public class PlanEvaluatorJniWrapper implements RuntimeAware {
     return runtime.getHandle();
   }
 
-  public static native void injectWriteFilesTempPath(byte[] path);
+  public static native void injectWriteFilesTempPath(byte[] path, byte[] fileName);
 
   /**
    * Validate the Substrait plan in native compute engine.
@@ -65,7 +65,8 @@ public class PlanEvaluatorJniWrapper implements RuntimeAware {
       int stageId,
       int partitionId,
       long taskId,
-      boolean saveInputToFile,
-      String spillDir)
+      boolean enableDumping,
+      String spillDir,
+      boolean enableCudf)
       throws RuntimeException;
 }

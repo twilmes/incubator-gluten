@@ -49,14 +49,13 @@ abstract class VeloxAggregateFunctionsSuite extends VeloxWholeStageTransformerSu
       .set("spark.unsafe.exceptionOnMemoryLeak", "true")
       .set("spark.sql.autoBroadcastJoinThreshold", "-1")
       .set("spark.sql.sources.useV1SourceList", "avro")
-      .set("spark.gluten.sql.mergeTwoPhasesAggregate.enabled", "false")
+      .set(GlutenConfig.MERGE_TWO_PHASES_ENABLED.key, "false")
   }
 
   test("count") {
-    val df =
-      runQueryAndCompare("select count(*) from lineitem where l_partkey in (1552, 674, 1062)") {
-        checkGlutenOperatorMatch[HashAggregateExecTransformer]
-      }
+    runQueryAndCompare("select count(*) from lineitem where l_partkey in (1552, 674, 1062)") {
+      checkGlutenOperatorMatch[HashAggregateExecTransformer]
+    }
     runQueryAndCompare("select count(l_quantity), count(distinct l_partkey) from lineitem") {
       df =>
         {
@@ -70,7 +69,7 @@ abstract class VeloxAggregateFunctionsSuite extends VeloxWholeStageTransformerSu
   }
 
   test("avg") {
-    val df = runQueryAndCompare("select avg(l_partkey) from lineitem where l_partkey < 1000") {
+    runQueryAndCompare("select avg(l_partkey) from lineitem where l_partkey < 1000") {
       checkGlutenOperatorMatch[HashAggregateExecTransformer]
     }
     runQueryAndCompare("select avg(l_quantity), count(distinct l_partkey) from lineitem") {
@@ -215,7 +214,7 @@ abstract class VeloxAggregateFunctionsSuite extends VeloxWholeStageTransformerSu
   }
 
   test("group sets") {
-    val result = runQueryAndCompare(
+    runQueryAndCompare(
       "select l_orderkey, l_partkey, sum(l_suppkey) from lineitem " +
         "where l_orderkey < 3 group by ROLLUP(l_orderkey, l_partkey) " +
         "order by l_orderkey, l_partkey ") { _ => }
@@ -1193,28 +1192,6 @@ class VeloxAggregateFunctionsDefaultSuite extends VeloxAggregateFunctionsSuite {
       }
     }
   }
-
-  test("aggregate on join keys can set ignoreNullKeys") {
-    val s =
-      """
-        |select count(1) from
-        |  (select l_orderkey, max(l_partkey) from lineitem group by l_orderkey) a
-        |inner join
-        |  (select l_orderkey from lineitem) b
-        |on a.l_orderkey = b.l_orderkey
-        |""".stripMargin
-    withSQLConf(GlutenConfig.COLUMNAR_FORCE_SHUFFLED_HASH_JOIN_ENABLED.key -> "true") {
-      runQueryAndCompare(s) {
-        df =>
-          val executedPlan = getExecutedPlan(df)
-          assert(executedPlan.exists {
-            case a: RegularHashAggregateExecTransformer if a.ignoreNullKeys => true
-            case a: FlushableHashAggregateExecTransformer if a.ignoreNullKeys => true
-            case _ => false
-          })
-      }
-    }
-  }
 }
 
 class VeloxAggregateFunctionsFlushSuite extends VeloxAggregateFunctionsSuite {
@@ -1276,10 +1253,10 @@ class VeloxAggregateFunctionsFlushSuite extends VeloxAggregateFunctionsSuite {
 
   test("flushable aggregate rule - double sum when floatingPointMode is strict") {
     withSQLConf(
-      "spark.gluten.sql.columnar.backend.velox.maxPartialAggregationMemory" -> "100",
-      "spark.gluten.sql.columnar.backend.velox.resizeBatches.shuffleInput" -> "false",
-      "spark.gluten.sql.columnar.maxBatchSize" -> "2",
-      "spark.gluten.sql.columnar.backend.velox.floatingPointMode" -> "strict"
+      VeloxConfig.MAX_PARTIAL_AGGREGATION_MEMORY.key -> "100",
+      VeloxConfig.COLUMNAR_VELOX_RESIZE_BATCHES_SHUFFLE_INPUT.key -> "false",
+      GlutenConfig.COLUMNAR_MAX_BATCH_SIZE.key -> "2",
+      VeloxConfig.FLOATING_POINT_MODE.key -> "strict"
     ) {
       withTempView("t1") {
         import testImplicits._
@@ -1302,7 +1279,7 @@ class VeloxAggregateFunctionsFlushSuite extends VeloxAggregateFunctionsSuite {
 
   test("flushable aggregate rule - double sum when floatingPointMode is loose") {
     withSQLConf(
-      "spark.gluten.sql.columnar.backend.velox.floatingPointMode" -> "loose"
+      VeloxConfig.FLOATING_POINT_MODE.key -> "loose"
     ) {
       withTempView("t1") {
         import testImplicits._

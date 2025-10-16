@@ -17,7 +17,7 @@
 package org.apache.gluten.backendsapi
 
 import org.apache.gluten.config.GlutenConfig
-import org.apache.gluten.extension.ValidationResult
+import org.apache.gluten.execution.ValidationResult
 import org.apache.gluten.extension.columnar.transition.Convention
 import org.apache.gluten.substrait.rel.LocalFilesNode
 import org.apache.gluten.substrait.rel.LocalFilesNode.ReadFileFormat
@@ -28,18 +28,19 @@ import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.connector.read.Scan
 import org.apache.spark.sql.execution.command.CreateDataSourceTableAsSelectCommand
 import org.apache.spark.sql.execution.datasources.{FileFormat, InsertIntoHadoopFsRelationCommand}
-import org.apache.spark.sql.types.StructField
+import org.apache.spark.sql.types.{StructField, StructType}
 
 import org.apache.hadoop.conf.Configuration
 
 trait BackendSettingsApi {
 
-  /** The columnar-batch type this backend is by default using. */
+  /** The default columnar-batch type of this backend. */
   def primaryBatchType: Convention.BatchType
 
   def validateScanExec(
       format: ReadFileFormat,
-      fields: Array[StructField],
+      fields: Array[StructField], // the fields to be output
+      dataSchema: StructType, // the schema of the table
       rootPaths: Seq[String],
       properties: Map[String, String],
       hadoopConf: Configuration): ValidationResult =
@@ -105,8 +106,6 @@ trait BackendSettingsApi {
 
   def rescaleDecimalArithmetic: Boolean = false
 
-  def allowDecimalArithmetic: Boolean = true
-
   /**
    * After https://github.com/apache/spark/pull/36698, every arithmetic should report the accurate
    * result decimal type and implement `CheckOverflow` by itself. <p/> Regardless of whether there
@@ -126,8 +125,6 @@ trait BackendSettingsApi {
   def skipNativeInsertInto(insertInto: InsertIntoHadoopFsRelationCommand): Boolean = false
 
   def alwaysFailOnMapExpression(): Boolean = false
-
-  def requiredChildOrderingForWindow(): Boolean = true
 
   def requiredChildOrderingForWindowGroupLimit(): Boolean = true
 
@@ -156,4 +153,15 @@ trait BackendSettingsApi {
 
   def supportIcebergEqualityDeleteRead(): Boolean = true
 
+  def reorderColumnsForPartitionWrite(): Boolean = false
+
+  def enableEnhancedFeatures(): Boolean = false
+
+  def supportAppendDataExec(): Boolean = false
+
+  def supportReplaceDataExec(): Boolean = false
+
+  def supportOverwriteByExpression(): Boolean = false
+
+  def supportOverwritePartitionsDynamic(): Boolean = false
 }

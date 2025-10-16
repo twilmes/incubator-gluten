@@ -17,6 +17,7 @@
 #pragma once
 
 #include <Core/Block.h>
+#include <Formats/FormatSettings.h>
 #include <Storages/Parquet/ColumnIndexFilter.h>
 #include <Storages/Parquet/RowRanges.h>
 #include <base/types.h>
@@ -40,6 +41,7 @@ struct RowGroupInformation
 
 struct ParquetMetaBuilder
 {
+    DB::FormatSettings format_settings;
     // control flag
     bool case_insensitive = false;
     bool allow_missing_columns = false;
@@ -101,11 +103,11 @@ namespace ParquetVirtualMeta
 inline constexpr auto TMP_ROWINDEX = "_tmp_metadata_row_index";
 inline bool hasMetaColumns(const DB::Block & header)
 {
-    return header.findByName(TMP_ROWINDEX) != nullptr;
+    return header.findByName(std::string_view{TMP_ROWINDEX}) != nullptr;
 }
 inline DB::DataTypePtr getMetaColumnType(const DB::Block & header)
 {
-    return header.findByName(TMP_ROWINDEX)->type;
+    return header.findByName(std::string_view{TMP_ROWINDEX})->type;
 }
 inline DB::Block removeMetaColumns(const DB::Block & header)
 {

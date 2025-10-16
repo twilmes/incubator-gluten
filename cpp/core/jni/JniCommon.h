@@ -24,39 +24,56 @@
 
 #include "compute/ProtobufUtils.h"
 #include "compute/Runtime.h"
-#include "config/GlutenConfig.h"
 #include "memory/AllocationListener.h"
-#include "operators/writer/ArrowWriter.h"
 #include "shuffle/rss/RssClient.h"
 #include "utils/Compression.h"
 #include "utils/Exception.h"
-#include "utils/ObjectStore.h"
 #include "utils/ResourceMap.h"
 
 static jint jniVersion = JNI_VERSION_1_8;
 
 static inline std::string jStringToCString(JNIEnv* env, jstring string) {
-  int32_t jlen, clen;
-  clen = env->GetStringUTFLength(string);
-  jlen = env->GetStringLength(string);
-  char buffer[clen + 1];
-  env->GetStringUTFRegion(string, 0, jlen, buffer);
-  return std::string(buffer, clen);
+  if (!string) {
+    return {};
+  }
+
+  const char* chars = env->GetStringUTFChars(string, nullptr);
+  if (chars == nullptr) {
+    // OOM During GetStringUTFChars.
+    throw gluten::GlutenException("Error occurred during GetStringUTFChars. Probably OOM.");
+  }
+
+  std::string result(chars);
+  env->ReleaseStringUTFChars(string, chars);
+  return result;
 }
 
 static inline void checkException(JNIEnv* env) {
   if (env->ExceptionCheck()) {
     jthrowable t = env->ExceptionOccurred();
     env->ExceptionClear();
+
     jclass describerClass = env->FindClass("org/apache/gluten/exception/JniExceptionDescriber");
     jmethodID describeMethod =
         env->GetStaticMethodID(describerClass, "describe", "(Ljava/lang/Throwable;)Ljava/lang/String;");
-    std::string description =
-        jStringToCString(env, (jstring)env->CallStaticObjectMethod(describerClass, describeMethod, t));
+
+    std::stringstream message;
+    message << "Error during calling Java code from native code: ";
+
+    const auto description = static_cast<jstring>(env->CallStaticObjectMethod(describerClass, describeMethod, t));
+
     if (env->ExceptionCheck()) {
-      LOG(WARNING) << "Fatal: Uncaught Java exception during calling the Java exception describer method! ";
+      message << "Uncaught Java exception during calling the Java exception describer method!";
+      env->ExceptionClear();
+    } else {
+      try {
+        message << jStringToCString(env, description);
+      } catch (const std::exception& e) {
+        message << e.what();
+      }
     }
-    throw gluten::GlutenException("Error during calling Java code from native code: " + description);
+
+    throw gluten::GlutenException(message.str());
   }
 }
 
@@ -266,7 +283,7 @@ class JniColumnarBatchIterator : public ColumnarBatchIterator {
       JNIEnv* env,
       jobject jColumnarBatchItr,
       Runtime* runtime,
-      std::shared_ptr<ArrowWriter> writer);
+      std::optional<int32_t> iteratorIndex = std::nullopt);
 
   // singleton
   JniColumnarBatchIterator(const JniColumnarBatchIterator&) = delete;
@@ -274,26 +291,40 @@ class JniColumnarBatchIterator : public ColumnarBatchIterator {
   JniColumnarBatchIterator& operator=(const JniColumnarBatchIterator&) = delete;
   JniColumnarBatchIterator& operator=(JniColumnarBatchIterator&&) = delete;
 
-  virtual ~JniColumnarBatchIterator();
+  ~JniColumnarBatchIterator() override;
 
   std::shared_ptr<ColumnarBatch> next() override;
 
  private:
+  class ColumnarBatchIteratorDumper final : public ColumnarBatchIterator {
+   public:
+    ColumnarBatchIteratorDumper(JniColumnarBatchIterator* self) : self_(self){};
+
+    std::shared_ptr<ColumnarBatch> next() override {
+      return self_->nextInternal();
+    }
+
+   private:
+    JniColumnarBatchIterator* self_;
+  };
+
+  std::shared_ptr<ColumnarBatch> nextInternal() const;
+
   JavaVM* vm_;
   jobject jColumnarBatchItr_;
   Runtime* runtime_;
-  std::shared_ptr<ArrowWriter> writer_;
+  std::optional<int32_t> iteratorIndex_;
+  const bool shouldDump_;
 
   jclass serializedColumnarBatchIteratorClass_;
   jmethodID serializedColumnarBatchIteratorHasNext_;
   jmethodID serializedColumnarBatchIteratorNext_;
+
+  std::shared_ptr<ColumnarBatchIterator> dumpedIteratorReader_{nullptr};
 };
 
-std::unique_ptr<JniColumnarBatchIterator> makeJniColumnarBatchIterator(
-    JNIEnv* env,
-    jobject jColumnarBatchItr,
-    Runtime* runtime,
-    std::shared_ptr<ArrowWriter> writer);
+std::unique_ptr<JniColumnarBatchIterator>
+makeJniColumnarBatchIterator(JNIEnv* env, jobject jColumnarBatchItr, Runtime* runtime);
 } // namespace gluten
 
 // TODO: Move the static functions to namespace gluten
@@ -323,44 +354,15 @@ static inline arrow::Compression::type getCompressionType(JNIEnv* env, jstring c
   return compressionType;
 }
 
-static inline const std::string getCompressionTypeStr(JNIEnv* env, jstring codecJstr) {
-  if (codecJstr == NULL) {
-    return "none";
-  }
-  auto codec = env->GetStringUTFChars(codecJstr, JNI_FALSE);
-
-  // Convert codec string into lowercase.
-  std::string codecLower;
-  std::transform(codec, codec + std::strlen(codec), std::back_inserter(codecLower), ::tolower);
-
-  env->ReleaseStringUTFChars(codecJstr, codec);
-  return codecLower;
-}
-
-static inline gluten::CodecBackend getCodecBackend(JNIEnv* env, jstring codecJstr) {
-  if (codecJstr == nullptr) {
+static inline gluten::CodecBackend getCodecBackend(JNIEnv* env, jstring codecBackendJstr) {
+  if (codecBackendJstr == nullptr) {
     return gluten::CodecBackend::NONE;
   }
-  auto codecBackend = jStringToCString(env, codecJstr);
+  auto codecBackend = jStringToCString(env, codecBackendJstr);
   if (codecBackend == "qat") {
     return gluten::CodecBackend::QAT;
-  } else if (codecBackend == "iaa") {
-    return gluten::CodecBackend::IAA;
-  } else {
-    throw std::invalid_argument("Not support this codec backend " + codecBackend);
   }
-}
-
-static inline gluten::CompressionMode getCompressionMode(JNIEnv* env, jstring compressionModeJstr) {
-  GLUTEN_DCHECK(compressionModeJstr != nullptr, "CompressionMode cannot be null");
-  auto compressionMode = jStringToCString(env, compressionModeJstr);
-  if (compressionMode == "buffer") {
-    return gluten::CompressionMode::BUFFER;
-  } else if (compressionMode == "rowvector") {
-    return gluten::CompressionMode::ROWVECTOR;
-  } else {
-    throw std::invalid_argument("Not support this compression mode " + compressionMode);
-  }
+  throw std::invalid_argument("Not support this codec backend " + codecBackend);
 }
 
 /*

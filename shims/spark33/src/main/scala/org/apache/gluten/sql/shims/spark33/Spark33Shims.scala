@@ -27,6 +27,7 @@ import org.apache.spark.scheduler.TaskInfo
 import org.apache.spark.shuffle.ShuffleHandle
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.analysis.DecimalPrecision
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.csv.CSVOptions
 import org.apache.spark.sql.catalyst.expressions._
@@ -35,9 +36,8 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.plans.physical.{ClusteredDistribution, Distribution}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
+import org.apache.spark.sql.catalyst.util.{CaseInsensitiveMap, TimestampFormatter}
 import org.apache.spark.sql.catalyst.util.RebaseDateTime.RebaseSpec
-import org.apache.spark.sql.catalyst.util.TimestampFormatter
 import org.apache.spark.sql.connector.catalog.Table
 import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.execution.{FileSourceScanExec, PartitionedFileUtil, SparkPlan}
@@ -50,7 +50,7 @@ import org.apache.spark.sql.execution.datasources.v2.utils.CatalogUtil
 import org.apache.spark.sql.execution.exchange.BroadcastExchangeLike
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.types.{DecimalType, StructField, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.storage.{BlockId, BlockManagerId}
 
@@ -61,7 +61,7 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.schema.MessageType
 
 import java.time.ZoneOffset
-import java.util.{HashMap => JHashMap, Map => JMap, Properties}
+import java.util.{HashMap => JHashMap, Map => JMap}
 
 class Spark33Shims extends SparkShims {
   override def getDistribution(
@@ -78,6 +78,7 @@ class Spark33Shims extends SparkShims {
       Sig[KnownNullable](KNOWN_NULLABLE),
       Sig[Empty2Null](ExpressionNames.EMPTY2NULL),
       Sig[TimestampAdd](TIMESTAMP_ADD),
+      Sig[TimestampDiff](ExpressionNames.TIMESTAMP_DIFF),
       Sig[RoundFloor](FLOOR),
       Sig[RoundCeil](CEIL)
     )
@@ -259,10 +260,6 @@ class Spark33Shims extends SparkShims {
     List(session => GlutenFormatFactory.getExtendedColumnarPostRule(session))
   }
 
-  override def createTestTaskContext(properties: Properties): TaskContext = {
-    TaskContextUtils.createTestTaskContext(properties)
-  }
-
   def setJobDescriptionOrTagForBroadcastExchange(
       sc: SparkContext,
       broadcastExchange: BroadcastExchangeLike): Unit = {
@@ -349,8 +346,6 @@ class Spark33Shims extends SparkShims {
     }
   }
 
-  override def supportsRowBased(plan: SparkPlan): Boolean = plan.supportsRowBased
-
   override def dateTimestampFormatInReadIsDefaultValue(
       csvOptions: CSVOptions,
       timeZone: String): Boolean = {
@@ -400,6 +395,18 @@ class Spark33Shims extends SparkShims {
         e.printStackTrace()
         false
     }
+  }
+
+  override def extractExpressionTimestampDiffUnit(exp: Expression): Option[String] = {
+    exp match {
+      case timestampDiff: TimestampDiff =>
+        Some(timestampDiff.unit)
+      case _ => Option.empty
+    }
+  }
+
+  override def widerDecimalType(d1: DecimalType, d2: DecimalType): DecimalType = {
+    DecimalPrecision.widerDecimalType(d1, d2)
   }
 
 }

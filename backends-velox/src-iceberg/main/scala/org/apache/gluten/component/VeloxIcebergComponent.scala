@@ -14,10 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.gluten.component
+
 import org.apache.gluten.backendsapi.velox.VeloxBackend
-import org.apache.gluten.execution.OffloadIcebergScan
+import org.apache.gluten.extension.{OffloadIcebergScan, OffloadIcebergWrite}
 import org.apache.gluten.extension.injector.Injector
 
 class VeloxIcebergComponent extends Component {
@@ -27,5 +27,6 @@ class VeloxIcebergComponent extends Component {
   override def dependencies(): Seq[Class[_ <: Component]] = classOf[VeloxBackend] :: Nil
   override def injectRules(injector: Injector): Unit = {
     OffloadIcebergScan.inject(injector)
+    OffloadIcebergWrite.inject(injector)
   }
 }

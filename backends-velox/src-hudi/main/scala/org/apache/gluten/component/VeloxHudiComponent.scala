@@ -14,10 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.gluten.component
 
 import org.apache.gluten.backendsapi.velox.VeloxBackend
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.execution.OffloadHudiScan
 import org.apache.gluten.extension.columnar.enumerated.RasOffload
 import org.apache.gluten.extension.columnar.heuristic.HeuristicTransform
@@ -37,13 +37,15 @@ class VeloxHudiComponent extends Component {
     legacy.injectTransform {
       c =>
         val offload = Seq(OffloadHudiScan()).map(_.toStrcitRule())
-        HeuristicTransform.Simple(Validators.newValidator(c.glutenConf, offload), offload)
+        HeuristicTransform.Simple(
+          Validators.newValidator(new GlutenConfig(c.sqlConf), offload),
+          offload)
     }
     ras.injectRasRule {
       c =>
         RasOffload.Rule(
           RasOffload.from[FileSourceScanExec](OffloadHudiScan()),
-          Validators.newValidator(c.glutenConf),
+          Validators.newValidator(new GlutenConfig(c.sqlConf)),
           Nil)
     }
   }

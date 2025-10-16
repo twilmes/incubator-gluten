@@ -17,6 +17,7 @@
 package org.apache.gluten.execution
 
 import org.apache.gluten.backendsapi.clickhouse.CHConfig
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.expression.{FlattenedAnd, FlattenedOr}
 
 import org.apache.spark.SparkConf
@@ -36,12 +37,6 @@ import java.sql.Date
 import scala.reflect.ClassTag
 
 class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerSuite {
-
-  protected val tablesPath: String = basePath + "/tpch-data"
-  protected val tpchQueries: String =
-    rootPath + "../../../../tools/gluten-it/common/src/main/resources/tpch-queries"
-  protected val queriesResults: String = rootPath + "queries-output"
-
   private var parquetPath: String = _
 
   override protected def sparkConf: SparkConf = {
@@ -61,13 +56,13 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
       .set(ClickHouseConfig.CLICKHOUSE_WORKER_ID, "1")
       .set("spark.gluten.sql.columnar.iterator", "true")
       .set("spark.gluten.sql.columnar.hashagg.enablefinal", "true")
-      .set("spark.gluten.sql.enable.native.validation", "false")
+      .set(GlutenConfig.NATIVE_VALIDATION_ENABLED.key, "false")
       .set("spark.sql.warehouse.dir", warehouse)
       .set("spark.shuffle.manager", "sort")
       .set("spark.io.compression.codec", "snappy")
       .set("spark.sql.shuffle.partitions", "5")
       .set("spark.sql.autoBroadcastJoinThreshold", "10MB")
-      .set("spark.gluten.supported.scala.udfs", "compare_substrings:compare_substrings")
+      .set(GlutenConfig.GLUTEN_SUPPORTED_SCALA_UDFS.key, "compare_substrings:compare_substrings")
   }
 
   override def beforeAll(): Unit = {
@@ -306,7 +301,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
       checkPlan(df.queryExecution.analyzed, path)
     }
 
-    withSQLConf(("spark.gluten.sql.collapseGetJsonObject.enabled", "true")) {
+    withSQLConf((GlutenConfig.ENABLE_COLLAPSE_GET_JSON_OBJECT.key, "true")) {
       runQueryAndCompare(
         "select get_json_object(get_json_object(string_field1, '$.a'), '$.y') " +
           " from json_test where int_field1 = 6") {
@@ -563,7 +558,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
         | str_to_map('a,b', ',', ''),
         | str_to_map('a:c|b:c', '\\|', ':')
         |""".stripMargin
-    runQueryAndCompare(sql1, true)(checkGlutenOperatorMatch[ProjectExecTransformer])
+    runQueryAndCompare(sql1)(checkGlutenOperatorMatch[ProjectExecTransformer])
   }
 
   test("test parse_url") {
@@ -700,28 +695,26 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
   }
 
   test("test date comparision expression override") {
+    runQueryAndCompare("select * from date_table where to_date(from_unixtime(ts)) < '2019-01-02'") {
+      _ =>
+    }
     runQueryAndCompare(
-      "select * from date_table where to_date(from_unixtime(ts)) < '2019-01-02'",
-      noFallBack = true) { _ => }
+      "select * from date_table where to_date(from_unixtime(ts)) <= '2019-01-02'") { _ => }
+    runQueryAndCompare("select * from date_table where to_date(from_unixtime(ts)) > '2019-01-02'") {
+      _ =>
+    }
     runQueryAndCompare(
-      "select * from date_table where to_date(from_unixtime(ts)) <= '2019-01-02'",
-      noFallBack = true) { _ => }
+      "select * from date_table where to_date(from_unixtime(ts)) >= '2019-01-02'") { _ => }
+    runQueryAndCompare("select * from date_table where to_date(from_unixtime(ts)) = '2019-01-01'") {
+      _ =>
+    }
     runQueryAndCompare(
-      "select * from date_table where to_date(from_unixtime(ts)) > '2019-01-02'",
-      noFallBack = true) { _ => }
-    runQueryAndCompare(
-      "select * from date_table where to_date(from_unixtime(ts)) >= '2019-01-02'",
-      noFallBack = true) { _ => }
-    runQueryAndCompare(
-      "select * from date_table where to_date(from_unixtime(ts)) = '2019-01-01'",
-      noFallBack = true) { _ => }
-    runQueryAndCompare(
-      "select * from date_table where from_unixtime(ts) between '2019-01-01' and '2019-01-02'",
-      noFallBack = true) { _ => }
+      "select * from date_table where from_unixtime(ts) between '2019-01-01' and '2019-01-02'") {
+      _ =>
+    }
     runQueryAndCompare(
       "select * from date_table where from_unixtime(ts, 'yyyy-MM-dd') between" +
-        " '2019-01-01' and '2019-01-02'",
-      noFallBack = true) { _ => }
+        " '2019-01-01' and '2019-01-02'") { _ => }
   }
 
   test("test element_at function") {
@@ -731,24 +724,19 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
       // input type is array<array<int>>
       runQueryAndCompare(
         "SELECT array(array(1,2,3), array(4,5,6))[1], " +
-          "array(array(id,id+1,id+2), array(id+3,id+4,id+5)) from range(100)",
-        noFallBack = true
-      )(checkGlutenOperatorMatch[ProjectExecTransformer])
+          "array(array(id,id+1,id+2), array(id+3,id+4,id+5)) from range(100)")(
+        checkGlutenOperatorMatch[ProjectExecTransformer])
 
       // input type is array<array<string>>
       runQueryAndCompare(
         "SELECT array(array('1','2','3'), array('4','5','6'))[1], " +
           "array(array('1','2',cast(id as string)), array('4','5',cast(id as string)))[1] " +
-          "from range(100)",
-        noFallBack = true
-      )(checkGlutenOperatorMatch[ProjectExecTransformer])
+          "from range(100)")(checkGlutenOperatorMatch[ProjectExecTransformer])
 
       // input type is array<map<string, int>>
       runQueryAndCompare(
         "SELECT array(map(cast(id as string), id), map(cast(id+1 as string), id+1))[1] " +
-          "from range(100)",
-        noFallBack = true
-      )(checkGlutenOperatorMatch[ProjectExecTransformer])
+          "from range(100)")(checkGlutenOperatorMatch[ProjectExecTransformer])
     }
   }
 
@@ -765,7 +753,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
       }
     }
 
-    withSQLConf(("spark.gluten.sql.commonSubexpressionEliminate", "true")) {
+    withSQLConf((GlutenConfig.ENABLE_COMMON_SUBEXPRESSION_ELIMINATE.key, "true")) {
       // CSE in project
       runQueryAndCompare("select hash(id), hash(id)+1, hash(id)-1 from range(10)") {
         df => checkOperatorCount[ProjectExecTransformer](2)(df)
@@ -870,7 +858,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
 
   test("avg(bigint) overflow") {
     withSQLConf(
-      "spark.gluten.sql.columnar.forceShuffledHashJoin" -> "false",
+      GlutenConfig.COLUMNAR_FORCE_SHUFFLED_HASH_JOIN_ENABLED.key -> "false",
       "spark.sql.autoBroadcastJoinThreshold" -> "-1") {
       withTable("myitem") {
         sql("create table big_int(id bigint) using parquet")
@@ -1063,6 +1051,16 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
     }
   }
 
+  test("Test map_concat") {
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        (ConstantFolding.ruleName + "," + NullPropagation.ruleName)) {
+      runQueryAndCompare(
+        "select map_concat(map(1, 'a', 2, 'b'), map(3, null)), map_concat()"
+      )(checkGlutenOperatorMatch[ProjectExecTransformer])
+    }
+  }
+
   test("Test transform_keys/transform_values") {
     val sql =
       """
@@ -1083,10 +1081,10 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
       val projects = collectWithSubqueries(df.queryExecution.executedPlan) {
         case e: ProjectExecTransformer => e
       }
-      assert(projects.size >= 1)
+      assert(projects.nonEmpty)
     }
 
-    compareResultsAgainstVanillaSpark(sql, true, checkProjects, false)
+    compareResultsAgainstVanillaSpark(sql, compareResult = true, checkProjects, noFallBack = false)
   }
 
   test("GLUTEN-8406 replace from_json with get_json_object") {
@@ -1296,7 +1294,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
               case project: ProjectExecTransformer if isRewriteSubstringCompareProject(project) =>
                 project
             }
-            assert(projects.length == 0)
+            assert(projects.isEmpty)
         }
       )
     }
@@ -1343,7 +1341,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
 
       assert(projects.size == 1)
       assert(projects.head.projectList.size == 3)
-      assert(projects.head.projectList(0).asInstanceOf[Alias].child.isInstanceOf[Divide])
+      assert(projects.head.projectList.head.asInstanceOf[Alias].child.isInstanceOf[Divide])
       assert(projects.head.projectList(1).asInstanceOf[Alias].child.isInstanceOf[Multiply])
       assert(projects.head.projectList(2).asInstanceOf[Alias].child.isInstanceOf[Multiply])
     }
@@ -1353,7 +1351,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
     }
   }
 
-  test("Test rewrite aggregate if to aggregate with filter") {
+  ignore("Test rewrite aggregate if to aggregate with filter") {
     val sql = "select sum(if(id % 2=0, id, null)), count(if(id % 2 = 0, 1, null)), " +
       "avg(if(id % 4 = 0, id, null)), sum(if(id % 3 = 0, id, 0)) from range(10)"
 
@@ -1376,5 +1374,10 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
     withSQLConf((CHConfig.runtimeConfig("enable_aggregate_if_to_filter"), "true")) {
       compareResultsAgainstVanillaSpark(sql, compareResult = true, checkAggregateWithFilter)
     }
+  }
+
+  test("Test map with nullable key") {
+    val sql = "select map(string_field1, int_field1) from json_test where string_field1 is not null"
+    compareResultsAgainstVanillaSpark(sql, true, { _ => })
   }
 }

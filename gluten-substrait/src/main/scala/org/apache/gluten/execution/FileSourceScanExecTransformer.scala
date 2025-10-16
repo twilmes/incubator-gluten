@@ -18,21 +18,22 @@ package org.apache.gluten.execution
 
 import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.expression.ExpressionConverter
-import org.apache.gluten.extension.ValidationResult
 import org.apache.gluten.metrics.MetricsUpdater
 import org.apache.gluten.sql.shims.SparkShimLoader
 import org.apache.gluten.substrait.rel.LocalFilesNode.ReadFileFormat
 import org.apache.gluten.utils.FileIndexUtil
 
+import org.apache.spark.Partition
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, PlanExpression}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.util.truncatedString
-import org.apache.spark.sql.connector.read.InputPartition
+import org.apache.spark.sql.connector.read.streaming.SparkDataStream
 import org.apache.spark.sql.execution.FileSourceScanExecShim
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
+import org.apache.spark.util.SparkVersionUtil
 import org.apache.spark.util.collection.BitSet
 
 import org.apache.commons.lang3.StringUtils
@@ -110,22 +111,31 @@ abstract class FileSourceScanExecTransformerBase(
         output)
   }
 
+  override def dataFiltersInScan: Seq[Expression] = {
+    if (SparkVersionUtil.gteSpark35) {
+      dataFilters.filterNot(_.references.exists {
+        attr => BackendsApiManager.getSparkPlanExecApiInstance.isRowIndexMetadataColumn(attr.name)
+      })
+    } else {
+      super.dataFiltersInScan
+    }
+  }
+
   override def getMetadataColumns(): Seq[AttributeReference] = metadataColumns
 
-  override def outputAttributes(): Seq[Attribute] = output
-
-  override def getPartitions: Seq[InputPartition] = {
-    BackendsApiManager.getTransformerApiInstance.genInputPartitionSeq(
-      relation,
-      requiredSchema,
-      dynamicallySelectedPartitions,
-      output,
-      bucketedScan,
-      optionalBucketSet,
-      optionalNumCoalescedBuckets,
-      disableBucketedScan,
-      filterExprs()
-    )
+  override def getPartitions: Seq[Partition] = {
+    BackendsApiManager.getTransformerApiInstance
+      .genPartitionSeq(
+        relation,
+        requiredSchema,
+        getPartitionArray(),
+        output,
+        bucketedScan,
+        optionalBucketSet,
+        optionalNumCoalescedBuckets,
+        disableBucketedScan,
+        filterExprs()
+      )
   }
 
   override def getPartitionSchema: StructType = relation.partitionSchema
@@ -202,6 +212,14 @@ abstract class FileSourceScanExecTransformerBase(
     redact(
       s"$nodeNamePrefix$nodeName${truncatedString(output, "[", ",", "]", maxFields)}$metadataStr" +
         s" $nativeFiltersString")
+  }
+
+  // Required for Spark 4.0 to implement a trait method.
+  // The "override" keyword is omitted to maintain compatibility with earlier Spark versions.
+  def getStream: Option[SparkDataStream] = {
+    throw new UnsupportedOperationException(
+      "not supported on streaming"
+    )
   }
 }
 

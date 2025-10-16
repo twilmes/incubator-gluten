@@ -21,11 +21,12 @@ import org.apache.gluten.expression.{ExpressionNames, Sig}
 import org.apache.gluten.sql.shims.SparkShims
 import org.apache.gluten.utils.ExceptionUtils
 
-import org.apache.spark.{ShuffleUtils, SparkContext, TaskContext, TaskContextUtils}
+import org.apache.spark.{ShuffleUtils, SparkContext}
 import org.apache.spark.scheduler.TaskInfo
 import org.apache.spark.shuffle.ShuffleHandle
 import org.apache.spark.sql.{AnalysisException, SparkSession}
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.analysis.DecimalPrecision
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.csv.CSVOptions
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, BinaryExpression, Expression, InputFileBlockLength, InputFileBlockStart, InputFileName}
@@ -58,7 +59,7 @@ import org.apache.parquet.crypto.ParquetCryptoRuntimeException
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.schema.MessageType
 
-import java.util.{HashMap => JHashMap, Map => JMap, Properties}
+import java.util.{HashMap => JHashMap, Map => JMap}
 
 class Spark32Shims extends SparkShims {
 
@@ -160,10 +161,6 @@ class Spark32Shims extends SparkShims {
 
   override def getExtendedColumnarPostRules(): List[SparkSession => Rule[SparkPlan]] = {
     List(session => GlutenFormatFactory.getExtendedColumnarPostRule(session))
-  }
-
-  override def createTestTaskContext(properties: Properties): TaskContext = {
-    TaskContextUtils.createTestTaskContext(properties)
   }
 
   def setJobDescriptionOrTagForBroadcastExchange(
@@ -312,6 +309,10 @@ class Spark32Shims extends SparkShims {
         e.printStackTrace()
         false
     }
+  }
+
+  override def widerDecimalType(d1: DecimalType, d2: DecimalType): DecimalType = {
+    DecimalPrecision.widerDecimalType(d1, d2)
   }
 
 }

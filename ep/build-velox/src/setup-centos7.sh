@@ -24,11 +24,13 @@ CPU_TARGET="${CPU_TARGET:-avx}"
 NPROC=$(getconf _NPROCESSORS_ONLN)
 FMT_VERSION=10.1.1
 BUILD_DUCKDB="${BUILD_DUCKDB:-true}"
+BUILD_GEOS="${BUILD_GEOS:-true}"
 export CFLAGS=$(get_cxx_flags $CPU_TARGET)  # Used by LZO.
 export CXXFLAGS=$CFLAGS  # Used by boost.
 export CPPFLAGS=$CFLAGS  # Used by LZO.
 export PKG_CONFIG_PATH=/usr/local/lib64/pkgconfig:/usr/local/lib/pkgconfig:/usr/lib64/pkgconfig:/usr/lib/pkgconfig:$PKG_CONFIG_PATH
 FB_OS_VERSION="v2024.07.01.00"
+GEOS_VERSION="3.10.7"
 
 # shellcheck disable=SC2037
 SUDO="sudo -E"
@@ -58,7 +60,7 @@ function install_cmake {
 
 function install_ninja {
   cd "${DEPENDENCY_DIR}"
-  github_checkout ninja-build/ninja v1.11.1
+  github_checkout ninja-build/ninja v1.11.1 --depth 1
   ./configure.py --bootstrap
   cmake -Bbuild-cmake
   cmake --build build-cmake
@@ -163,22 +165,22 @@ function install_boost {
 
 function install_protobuf {
   cd "${DEPENDENCY_DIR}"
-  wget https://github.com/protocolbuffers/protobuf/releases/download/v21.4/protobuf-all-21.4.tar.gz
-  tar -xzf protobuf-all-21.4.tar.gz
-  cd protobuf-21.4
+  wget_and_untar https://github.com/protocolbuffers/protobuf/releases/download/v21.4/protobuf-all-21.4.tar.gz protobuf
+  pushd protobuf
   ./configure  CXXFLAGS="-fPIC"  --prefix=/usr/local
   make "-j$(nproc)"
   $SUDO make install
+  popd
 }
 
 function install_gtest {
   cd "${DEPENDENCY_DIR}"
-  wget https://github.com/google/googletest/archive/refs/tags/release-1.12.1.tar.gz
-  tar -xzf release-1.12.1.tar.gz
-  cd googletest-release-1.12.1
+  wget_and_untar https://github.com/google/googletest/archive/refs/tags/release-1.12.1.tar.gz googletest
+  pushd googletest
   mkdir -p build && cd build && cmake -DBUILD_GTEST=ON -DBUILD_GMOCK=ON -DINSTALL_GTEST=ON -DINSTALL_GMOCK=ON -DBUILD_SHARED_LIBS=ON ..
   make "-j$(nproc)"
   $SUDO make install
+  popd
 }
 
 function install_fmt {
@@ -194,6 +196,13 @@ function install_duckdb {
     echo 'Building DuckDB'
     wget_and_untar https://github.com/duckdb/duckdb/archive/refs/tags/v0.8.1.tar.gz duckdb
     cmake_install duckdb -DBUILD_UNITTESTS=OFF -DENABLE_SANITIZER=OFF -DENABLE_UBSAN=OFF -DBUILD_SHELL=OFF -DEXPORT_DLL_SYMBOLS=OFF -DCMAKE_BUILD_TYPE=Release
+  fi
+}
+
+function install_geos {
+  if [[ "$BUILD_GEOS" == "true" ]]; then
+    wget_and_untar https://github.com/libgeos/geos/archive/${GEOS_VERSION}.tar.gz geos
+    cmake_install_dir geos -DBUILD_TESTING=OFF
   fi
 }
 
@@ -216,6 +225,7 @@ function install_velox_deps {
   run_and_time install_gtest
   run_and_time install_conda
   run_and_time install_duckdb
+  run_and_time install_geos
 }
 
 $SUDO dnf makecache
@@ -226,11 +236,6 @@ dnf_install ccache wget which libevent-devel \
   yasm \
   openssl-devel libzstd-devel lz4-devel double-conversion-devel \
   curl-devel libxml2-devel libgsasl-devel libuuid-devel patch libicu-devel tzdata
-
-# Update tzdata, required by Velox at runtime.
-dnf_install python3-pip
-pip3 install tzdata
-cp /usr/local/lib/python3.6/site-packages/tzdata/zoneinfo/Factory /usr/share/zoneinfo/
 
 $SUDO dnf remove -y gflags
 
